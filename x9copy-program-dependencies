@@ -1,0 +1,181 @@
+#!/bin/bash
+# shellcheck disable=2004  ## Inappropriate complaining of "$/${} is unnecessary on arithmetic variables."
+# shellcheck disable=2034  ## Unused variables.
+# shellcheck disable=2119  ## Disable confusing and inapplicable warning about function's $1 meaning script's $1.
+# shellcheck disable=2155  ## Disable check to 'Declare and assign separately to avoid masking return values'.
+# shellcheck disable=2120  ## OK with declaring variables that accept arguments, without calling with arguments (this is 'overloading').
+
+##
+##	WARNING: This script is maintained on github. Don't edit directly. https://github.com/jim-collier/x9copy-program-dependencies
+##
+
+##	Purpose:
+##		Copies a program's dependencies to a specified folder.
+##		The original source hierarchy is maintained within that folder.
+##	History:
+##		- 20200930 JC: Copied logic from relevant functions in x9chroot, wrapped in fMain().
+
+
+## Quiet flag
+if [[ "${x9copy_program_dependencies_QUIET}" == "1" ]]; then declare -r -i beQuiet=1; else declare -r -i beQuiet=0; fi
+
+function fMain(){
+
+	if [[ ${beQuiet} -eq 0 ]]; then
+		fEcho_Clean ""
+	fi
+
+	## Arguments
+	local -r programFilespec="$1"
+	local -r targetBasepath="$2"
+	local -r allArgs="$*"
+
+	## Validate 1 of 2
+	if [[   -z "$(which basename 2>/dev/null || true)" ]]; then fThrowError "Program must be in path: 'basename'."     ; fi
+	if [[   -z "$(which ldd      2>/dev/null || true)" ]]; then fThrowError "Program must be in path: 'ldd'."          ; fi
+
+	## Check for help
+	if [[ -z "${programFilespec}"                                                        ]]; then fPurpose; fSyntax; exit 1; fi
+	if [[ -z "${targetBasepath}"                                                         ]]; then fPurpose; fSyntax; exit 1; fi
+	if [[ -n "$(echo "${allArgs,,} " | grep -iPo ".*(-h|-help) .*" 2>/dev/null || true)" ]]; then fPurpose; fSyntax; exit 1; fi
+
+	## Get verified program location
+	if [[ -f "${programFilespec}" ]]; then
+		local -r verifiedFilespec="${programFilespec}"
+	else
+		local -r verifiedFilespec="$(which "${programFilespec}")"
+	fi
+
+	## Validate 2 of 2
+	if [[   -z "${verifiedFilespec}"      ]]; then fThrowError "Source program file not found (or in path): '${programFilespec}'."; fi
+	if [[ ! -d "${targetBasepath}"        ]]; then fThrowError "Target folder not found: '${targetBasepath}'."                    ; fi
+	if [[      "${targetBasepath}" == "/" ]]; then fThrowError "Target folder cannot be '/'."                                     ; fi
+
+	## Prompt user
+	if [[ ${beQuiet} -eq 0 ]]; then
+		fEcho_Clean "Going to copy chain of dependencies."
+		fEcho_Clean ""
+		fEcho_Clean "Source program .......: ${programFilespec}"
+		fEcho_Clean "Target base folder ...: ${targetBasepath}"
+		fEcho_Clean ""
+		read -p "Continue? (y|N): " answer
+		fEcho_ResetBlankCounter
+		if [[ "${answer,,}" != "y" ]]; then
+			fEcho "User aborted."
+			exit 1
+		fi
+	fi
+
+	##
+	## Make it so
+	## 
+
+	if [[ ${beQuiet} -eq 0 ]]; then
+		fEcho ""
+		fEcho "Copying dependencies ..."
+	fi
+	fCopyDependencies "${verifiedFilespec}"
+
+	if [[ ${beQuiet} -eq 0 ]]; then
+		fEcho ""
+		fEcho "Done."
+		fEcho ""
+	fi
+
+}
+
+
+function fPurpose(){
+	fEcho_Clean ""
+	fEcho_Clean "Copies a program's dependencies to a specified folder."
+	fEcho_Clean "The original source hierarchy is maintained within that folder."
+	fEcho_Clean "Program can either be in current or specified folder, or in path."
+	fEcho_Clean "Be careful not to accidentally copy into a system folder."
+	fEcho_Clean ""
+}
+
+
+function fSyntax(){
+	fEcho_Clean ""
+	fEcho_Clean "$(basename "$0") [-h|--help] <source program file> <target 'root' folder>"
+	fEcho_Clean ""
+}
+
+
+function fCopyDependencies(){
+	local fileToProcess="$1"
+	
+	for doFile in $(ldd "${fileToProcess}" 2>/dev/null | grep -v "dynamic" | cut -d " " -f 3 | sed 's/://' | sort | uniq); do
+		if [[ -n "${doFile}" ]]; then
+			if [[ -n "${doFile}" ]]; then
+
+				## Copy this dependency
+				if [[ ${beQuiet} -eq 0 ]]; then
+					fEcho_Clean "Copying to '${targetBasepath}$(realpath --no-symlinks "${doFile}")' ..."
+				fi
+				cp --preserve=all --parents "$(realpath --no-symlinks "${doFile}")" "${targetBasepath}/"
+
+				## Recursivly process this dependency (this isn't necessary, ldd seems to already handle that)
+			#	fCopyDependencies "${doFile}"
+
+			fi
+		fi
+	done
+}
+
+
+function fThrowError(){
+	echo
+	if [[ -z "$1" ]]; then echo "An error occurred."
+	else                   echo "Error: $1"
+	fi
+	echo
+	exit 1
+}
+
+function fStrNormalize_byecho(){
+	local argStr="$*"
+	argStr="$(echo -e "${argStr}")" #.................................................................. Convert \n and \t to real newlines, etc.
+	argStr="${argStr//$'\n'/ }" #...................................................................... Convert newlines to spaces
+	argStr="${argStr//$'\t'/ }" #...................................................................... Convert tabs to spaces
+	argStr="$(echo "${argStr}" | awk '{$1=$1};1' 2>/dev/null || true)" #............................... Collapse multiple spaces to one and trim
+	argStr="$(echo "${argStr}" | sed 's/^[[:blank:]]*//;s/[[:blank:]]*$//' 2>/dev/null || true)" #..... Additional trim
+	echo "${argStr}"
+}
+
+
+declare -i _wasLastEchoBlank=0
+
+function fEcho_ResetBlankCounter(){ _wasLastEchoBlank=0; }
+
+function fEcho_Clean(){
+	if [[ -n "$1" ]]; then
+		echo -e "$*" | echo -e "$*"
+		_wasLastEchoBlank=0
+	else
+		[[ $_wasLastEchoBlank -eq 0 ]] && echo
+		_wasLastEchoBlank=1
+	fi
+}
+
+function fEcho_Clean_If(){
+	local -r prefix="$1"
+	local -r middleIf="$2"
+	local -r postfix="$3"
+	if [[ -n "${middleIf}" ]]; then fEcho_Clean "${prefix}${middleIf}${postfix}"; fi
+}
+
+function fEcho(){
+	if [[ -n "$*" ]]; then fEcho_Clean "[ $* ]"
+	else fEcho_Clean ""
+	fi
+}
+
+# shellcheck disable=2120  ## References arguments, but none are ever passed; Just because this library function isn't called here, doesn't mean it never will in other scripts.
+function fEcho_Force()       { fEcho_ResetBlankCounter; fEcho "$*";       }
+function fEcho_Clean_Force() { fEcho_ResetBlankCounter; fEcho_Clean "$*"; }
+
+
+set -e
+set -E
+fMain  "$1"  "$2"  "$3"  "$4"  "$5"  "$6"  "$7"  "$8"  "$9"
